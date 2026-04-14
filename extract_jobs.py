@@ -3,7 +3,7 @@ import html
 import json
 import re
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -501,74 +501,66 @@ def extract_bms_jobs(url: str) -> dict[str, Any]:
 
 
 def extract_workday_jobs(url: str) -> dict[str, Any]:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise ImportError(
-            "Playwright is required for Workday scraping. "
-            "Install it with: pip install playwright && playwright install chromium"
-        ) from exc
+    """Fetch all jobs from a Workday myworkdayjobs.com board via the JSON REST API."""
+    import requests as req
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=REQUEST_HEADERS["User-Agent"],
-            extra_http_headers={"Accept-Language": REQUEST_HEADERS["Accept-Language"]},
-        )
-        page = context.new_page()
-        page.goto(url, wait_until="networkidle", timeout=60000)
+    parsed = urlparse(url)
+    hostname = parsed.hostname  # e.g. "cmegroup.wd1.myworkdayjobs.com"
+    tenant = hostname.split(".")[0]  # e.g. "cmegroup"
 
-        accept_buttons = page.locator('button:has-text("Accept All Cookies")')
-        if accept_buttons.count() > 0:
-            accept_buttons.first.click()
-            page.wait_for_timeout(1000)
+    # Last non-empty path segment is the job board name (strips locale like "en-US")
+    path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+    board = path_parts[-1] if path_parts else ""
 
-        page.wait_for_selector("section[data-automation-id=\"jobResults\"]", timeout=30000)
-        page.wait_for_timeout(2000)
+    qs = parse_qs(parsed.query)
+    search_text = qs.get("q", [""])[0]
+    location_ids = qs.get("locations", [])
 
-        total_jobs_text = page.locator("p[data-automation-id=jobFoundText]").inner_text().strip()
-        total_jobs = parse_int(total_jobs_text)
+    api_url = f"https://{hostname}/wday/cxs/{tenant}/{board}/jobs"
+    headers = {
+        **REQUEST_HEADERS,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
-        jobs = []
-        locator = page.locator("section[data-automation-id=jobResults] ul[role=\"list\"] li")
-        for i in range(locator.count()):
-            item = locator.nth(i)
-            title_locator = item.locator("a[data-automation-id=jobTitle]")
-            if title_locator.count() == 0:
-                continue
+    limit = 20
+    offset = 0
+    total_jobs: int | None = None
+    all_jobs: list[dict] = []
 
-            title = title_locator.inner_text().strip()
-            href = title_locator.get_attribute("href") or ""
-            full_url = urljoin(url, href)
+    while True:
+        body: dict[str, Any] = {
+            "appliedFacets": {"locations": location_ids} if location_ids else {},
+            "limit": limit,
+            "offset": offset,
+            "searchText": search_text,
+        }
+        resp = req.post(api_url, json=body, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
 
-            location = ""
-            location_locator = item.locator("div[data-automation-id=locations]")
-            if location_locator.count() > 0:
-                location = location_locator.inner_text().strip()
-                location = re.sub(r"^\s*locations?\s*", "", location, flags=re.IGNORECASE).strip()
+        if total_jobs is None:
+            total_jobs = data.get("total", 0)
 
-            posted = ""
-            text = item.inner_text()
-            posted_match = re.search(
-                r"Posted\s+(?:Yesterday|Today|\d+\s+days?\s+ago)",
-                text,
-                re.IGNORECASE,
-            )
-            if posted_match:
-                posted = posted_match.group(0).strip()
+        postings = data.get("jobPostings") or []
+        if not postings:
+            break
 
-            jobs.append(
-                {
-                    "title": title,
-                    "location": location,
-                    "posted": posted,
-                    "url": full_url,
-                }
-            )
+        for job in postings:
+            path = job.get("externalPath", "")
+            job_url = f"https://{hostname}{path}" if path else ""
+            all_jobs.append({
+                "title": job.get("title", ""),
+                "location": job.get("locationsText", ""),
+                "posted": job.get("postedOn") or "",
+                "url": job_url,
+            })
 
-        browser.close()
+        offset += limit
+        if offset >= (total_jobs or 0):
+            break
 
-    return {"total_jobs": total_jobs, "jobs": jobs}
+    return {"total_jobs": total_jobs, "jobs": all_jobs}
 
 
 def extract_micron_jobs(url: str) -> dict[str, Any]:
