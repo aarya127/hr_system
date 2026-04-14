@@ -1,2 +1,7 @@
 Flask>=2.0
-requests>=2.0
+requests>=2.31.0
+python-jobspy>=1.1.80
+rich>=13.7.0
+click>=8.1.0
+pandas>=2.0.0
+playwright>=1.42.0
