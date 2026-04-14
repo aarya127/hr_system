@@ -30,6 +30,11 @@ DEFAULT_URLS = [
     "https://jobs.paloaltonetworks.com/en/search-jobs",
     "https://careers.qualcomm.com/careers",
     "https://www.lockheedmartinjobs.com/search-jobs",
+    # New sources
+    "https://careers.honeywell.com/en/sites/Honeywell/jobs?lastSelectedFacet=CATEGORIES&mode=location&selectedCategoriesFacet=300000017425610%3B300000017425634&selectedOrganizationsFacet=300000011497075&sortBy=POSTING_DATES_DESC",
+    "https://www.uber.com/ca/en/careers/list/?department=Data%20Science&department=Engineering",
+    "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional?q=machine%20learning",
+    "https://analogdevices.wd1.myworkdayjobs.com/External?q=machine%20learning",
 ]
 
 
@@ -781,6 +786,154 @@ def extract_corning_jobs(url: str) -> dict[str, Any]:
     return {'total_jobs': len(jobs), 'jobs': jobs}
 
 
+def extract_honeywell_jobs(url: str) -> dict[str, Any]:
+    import ast as _ast
+    try:
+        import requests as _req
+    except ImportError as exc:
+        raise ImportError("requests is required") from exc
+
+    from urllib.parse import parse_qs
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    categories = qs.get("selectedCategoriesFacet", [""])[0]
+    orgs = qs.get("selectedOrganizationsFacet", [""])[0]
+    last_facet = qs.get("lastSelectedFacet", ["CATEGORIES"])[0]
+    sort_by = qs.get("sortBy", ["POSTING_DATES_DESC"])[0]
+
+    # Fetch the careers page HTML to extract Oracle pod URL + site number from CX_CONFIG
+    session = _req.Session()
+    session.headers.update(REQUEST_HEADERS)
+    html_resp = session.get(url, timeout=30)
+    html_resp.raise_for_status()
+    html_text = html_resp.text
+
+    api_base_match = re.search(r"apiBaseUrl:\s*'([^']+)'", html_text)
+    site_number_match = re.search(r"siteNumber:\s*'([^']+)'", html_text)
+    if not api_base_match:
+        raise ValueError("Could not find Oracle HCM apiBaseUrl on Honeywell careers page")
+    api_base = api_base_match.group(1).rstrip("/")
+    site_number = site_number_match.group(1) if site_number_match else "CX_1"
+
+    session.headers["Accept"] = "application/json"
+    session.headers["Origin"] = "https://careers.honeywell.com"
+    session.headers["Referer"] = "https://careers.honeywell.com/"
+
+    expand = (
+        "requisitionList.workLocation,requisitionList.otherWorkLocations,"
+        "requisitionList.secondaryLocations,flexFieldsFacet.values,"
+        "requisitionList.requisitionFlexFields"
+    )
+    facets_list = "LOCATIONS%3BWORK_LOCATIONS%3BWORKPLACE_TYPES%3BTITLES%3BCATEGORIES%3BORGANIZATIONS%3BPOSTING_DATES%3BFLEX_FIELDS"
+    limit = 100
+    offset = 0
+    total = None
+    jobs = []
+
+    while True:
+        finder_parts = [
+            f"siteNumber={site_number}",
+            f"facetsList={facets_list}",
+            f"limit={limit}",
+            f"offset={offset}",
+            f"lastSelectedFacet={last_facet}",
+            f"sortBy={sort_by}",
+        ]
+        if categories:
+            finder_parts.append(f"selectedCategoriesFacet={categories}")
+        if orgs:
+            finder_parts.append(f"selectedOrganizationsFacet={orgs}")
+        finder = ",".join(finder_parts)
+
+        api_url = (
+            f"{api_base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+            f"?onlyData=true&expand={expand}&finder=findReqs;{finder}"
+        )
+        resp = session.get(api_url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+
+        items = data.get("items", [])
+        if not items:
+            break
+        search = items[0]
+        if total is None:
+            total = int(search.get("TotalJobsCount", 0) or 0)
+
+        req_list = search.get("requisitionList", [])
+        if isinstance(req_list, str):
+            req_list = _ast.literal_eval(req_list)
+        if not req_list:
+            break
+
+        for req in req_list:
+            job_id = req.get("Id", "")
+            title = (req.get("Title") or "").strip()
+            posted = (req.get("PostedDate") or "")[:10]
+            location = (req.get("PrimaryLocation") or "").strip()
+            jobs.append({
+                "title": title,
+                "location": location,
+                "posted": posted,
+                "url": f"https://careers.honeywell.com/en/sites/Honeywell/job/{job_id}",
+            })
+
+        offset += limit
+        if total is not None and offset >= total:
+            break
+
+    return {"total_jobs": total, "jobs": jobs}
+
+
+def extract_uber_jobs(url: str) -> dict[str, Any]:
+    from urllib.parse import parse_qs
+    try:
+        import requests as _req
+    except ImportError as exc:
+        raise ImportError("requests is required") from exc
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    departments = qs.get("department", ["Engineering"])
+
+    session = _req.Session()
+    session.headers.update(REQUEST_HEADERS)
+    session.headers["x-csrf-token"] = "x"
+    session.headers["Content-Type"] = "application/json"
+
+    resp = session.post(
+        "https://www.uber.com/api/loadSearchJobsResults?page=1",
+        json={"params": {"department": departments}},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    results = data.get("data", {}).get("results", [])
+    jobs = []
+    for item in results:
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        loc = item.get("location") or {}
+        location = ", ".join(filter(None, [
+            loc.get("city", ""),
+            loc.get("region", ""),
+            loc.get("countryName", ""),
+        ]))
+        posted = (item.get("creationDate") or "")[:10]
+        job_id = item.get("id", "")
+        jobs.append({
+            "title": title,
+            "location": location,
+            "posted": posted,
+            "url": f"https://www.uber.com/global/en/careers/list/{job_id}/",
+        })
+
+    return {"total_jobs": len(jobs), "jobs": jobs}
+
+
 def extract_applovin_jobs(url: str) -> dict[str, Any]:
     import json as _json
     api_url = 'https://boards-api.greenhouse.io/v1/boards/applovin/jobs'
@@ -837,6 +990,10 @@ def extract_jobs(url: str) -> dict[str, Any]:
         return extract_qualcomm_jobs(url)
     if "lockheedmartinjobs.com" in hostname:
         return extract_lockheed_jobs(url)
+    if "careers.honeywell.com" in hostname:
+        return extract_honeywell_jobs(url)
+    if "uber.com" in hostname:
+        return extract_uber_jobs(url)
 
     raise ValueError(f"Unsupported URL host: {hostname}")
 

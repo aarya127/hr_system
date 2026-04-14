@@ -267,6 +267,38 @@ def test_lockheed():
     assert_valid_result(result)
 
 
+@pytest.mark.integration
+def test_honeywell():
+    from extract_jobs import extract_honeywell_jobs
+    result = extract_honeywell_jobs(
+        "https://careers.honeywell.com/en/sites/Honeywell/jobs"
+        "?lastSelectedFacet=CATEGORIES&mode=location"
+        "&selectedCategoriesFacet=300000017425610%3B300000017425634"
+        "&selectedOrganizationsFacet=300000011497075&sortBy=POSTING_DATES_DESC"
+    )
+    assert_valid_result(result)
+    assert any(j["posted"] for j in result["jobs"]), "Honeywell should return posted dates"
+    for job in result["jobs"]:
+        if job["posted"]:
+            assert len(job["posted"]) == 10 and job["posted"][4] == "-", \
+                f"Honeywell date not ISO format: {job['posted']!r}"
+
+
+@pytest.mark.integration
+def test_uber():
+    from extract_jobs import extract_uber_jobs
+    result = extract_uber_jobs(
+        "https://www.uber.com/ca/en/careers/list/"
+        "?department=Data%20Science&department=Engineering"
+    )
+    assert_valid_result(result)
+    assert any(j["posted"] for j in result["jobs"]), "Uber should return posted dates"
+    for job in result["jobs"]:
+        if job["posted"]:
+            assert len(job["posted"]) == 10 and job["posted"][4] == "-", \
+                f"Uber date not ISO format: {job['posted']!r}"
+
+
 # ── slow (Playwright-based) extractor integration tests ───────────────────────
 
 @pytest.mark.slow
