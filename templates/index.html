@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Job Scraper UI</title>
+    <script>
+        // @ts-nocheck
+        document.addEventListener('DOMContentLoaded', function () {
+            var noJobs = {{ 'true' if jobs|length == 0 else 'false' }};
+            if (noJobs) {
+                setTimeout(function () {
+                    window.location.reload();
+                }, 5000);
+            }
+        });
+    </script>
+    <style>
+        body {
+            font-family: Inter, system-ui, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #f4f6fb;
+            color: #1f2937;
+        }
+        .page {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 32px;
+        }
+        header {
+            margin-bottom: 24px;
+        }
+        h1 {
+            margin: 0 0 8px;
+            font-size: 2rem;
+        }
+        .meta {
+            color: #4b5563;
+            margin-bottom: 16px;
+        }
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 18px;
+            border-radius: 999px;
+            text-decoration: none;
+            color: white;
+            background: #2563eb;
+            border: 1px solid transparent;
+            font-weight: 600;
+        }
+        .button:hover {
+            background: #1d4ed8;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 24px;
+        }
+        th, td {
+            text-align: left;
+            padding: 14px 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        th {
+            background: #eff6ff;
+            color: #0f172a;
+            font-weight: 700;
+            font-size: 0.95rem;
+        }
+        td a {
+            color: #1d4ed8;
+            text-decoration: none;
+        }
+        td a:hover {
+            text-decoration: underline;
+        }
+        .tag {
+            display: inline-flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 4px;
+            font-size: 0.9rem;
+            color: #475569;
+        }
+        .tag span {
+            background: #e0f2fe;
+            color: #0c4a6e;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 0.85rem;
+        }
+        .error {
+            padding: 16px;
+            margin-bottom: 24px;
+            border-radius: 12px;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <header>
+        <h1>Job Scraper Dashboard</h1>
+        <div class="meta">
+            {% if jobs %}
+                <strong>{{ jobs|length }} jobs</strong> from {{ urls|length }} sources &mdash; sorted by most recent posting date.
+            {% else %}
+                Viewing jobs from {{ urls|length }} configured sources. Sorted by most recent posting date.
+            {% endif %}
+            {% if updated_at %}
+                &nbsp;&middot;&nbsp; Last refreshed: {{ updated_at.strftime('%Y-%m-%d %H:%M:%S') }}
+            {% elif loading %}
+                &nbsp;&middot;&nbsp; Loading new data... (auto-refreshing every 5 seconds)
+            {% endif %}
+        </div>
+        <div class="actions">
+            <a class="button" href="/?refresh=1">Refresh jobs</a>
+        </div>
+    </header>
+
+    {% if errors %}
+        <div class="error">
+            <strong>Extraction errors:</strong>
+            <ul>
+                {% for err in errors %}
+                    <li><strong>{{ err.url }}</strong>: {{ err.message }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
+    <table>
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Location</th>
+                <th>Posted</th>
+                <th>Source</th>
+                <th>Link</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+                <tr>
+                    <td>{{ job.title }}</td>
+                    <td>{{ job.location }}</td>
+                    <td>{{ job.posted or 'Unknown' }}</td>
+                    <td>{{ job.source }}</td>
+                    <td><a href="{{ job.url }}" target="_blank" rel="noopener">Open</a></td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if not jobs %}
+        <p>{% if loading %}No jobs are available yet; fetching data in the background. Refresh after a moment.{% else %}No jobs available yet. Click refresh or wait for scraping to complete.{% endif %}</p>
+    {% endif %}
+</div>
+</body>
+</html>
