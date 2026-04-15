@@ -1230,7 +1230,7 @@ _NEWGRAD_CATEGORY_LABELS: dict[str, str] = {
 
 
 def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, Any]]:
-    """Render one Airtable embed page and extract all visible job rows.
+    """Render one Airtable embed page and extract all job rows via virtual-scroll traversal.
 
     Airtable column layout (confirmed via DOM inspection):
       col 0 – Position Title (frozen primary field)
@@ -1240,7 +1240,9 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
       col 4 – Location
       col 5 – Company
       col 6 – Salary
-      col 9 – Qualifications / requirements
+
+    The grid uses virtual scrolling: only ~25–30 rows are in the DOM at any time.
+    We scroll the .antiscroll-inner container in steps and harvest rows at each position.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -1251,11 +1253,50 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
         ) from exc
 
     label = _NEWGRAD_CATEGORY_LABELS.get(category, category)
-    jobs: list[dict[str, Any]] = []
+    # keyed by rowindex to avoid duplicates at step boundaries
+    rows_by_index: dict[int, dict] = {}
+
+    _JS_EXTRACT_VISIBLE = """() => {
+        const riSet = new Set();
+        document.querySelectorAll('[data-rowindex]').forEach(el => {
+            const ri = el.getAttribute('data-rowindex');
+            if (ri !== null && ri !== '' && !isNaN(Number(ri))) riSet.add(Number(ri));
+        });
+        const results = [];
+        for (const ri of riSet) {
+            const cell = ci => {
+                const el = document.querySelector(
+                    `[data-rowindex="${ri}"][data-columnindex="${ci}"]`
+                );
+                return el ? (el.innerText || '').trim() : '';
+            };
+            const applyCell = document.querySelector(
+                `[data-rowindex="${ri}"][data-columnindex="2"]`
+            );
+            const linkEl = applyCell
+                ? applyCell.querySelector('a[href*="jobright.ai"]')
+                : null;
+            const href = linkEl ? linkEl.href : '';
+            if (!href) continue;
+            results.push({
+                ri,
+                href,
+                title:    cell(0),
+                posted:   cell(1),
+                location: cell(3) + (cell(4) ? ' \u2013 ' + cell(4) : ''),
+                company:  cell(5),
+                salary:   cell(6),
+            });
+        }
+        return results;
+    }"""
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=REQUEST_HEADERS["User-Agent"])
+        context = browser.new_context(
+            user_agent=REQUEST_HEADERS["User-Agent"],
+            viewport={"width": 1400, "height": 900},
+        )
         page = context.new_page()
         page.goto(embed_url, wait_until="domcontentloaded", timeout=30000)
         try:
@@ -1263,60 +1304,47 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
         except Exception:
             pass
 
-        rows_data: list[dict] = page.evaluate("""() => {
-            // Collect every distinct numeric rowindex present in the DOM
-            const riSet = new Set();
-            document.querySelectorAll('[data-rowindex]').forEach(el => {
-                const ri = el.getAttribute('data-rowindex');
-                if (ri !== null && ri !== '' && !isNaN(Number(ri))) riSet.add(Number(ri));
-            });
-
-            const results = [];
-            for (const ri of [...riSet].sort((a,b)=>a-b)) {
-                const cell = ci => {
-                    const el = document.querySelector(
-                        `[data-rowindex="${ri}"][data-columnindex="${ci}"]`
-                    );
-                    return el ? (el.innerText || '').trim() : '';
-                };
-                // Apply link lives in col 2
-                const applyCell = document.querySelector(
-                    `[data-rowindex="${ri}"][data-columnindex="2"]`
-                );
-                const linkEl = applyCell
-                    ? applyCell.querySelector('a[href*="jobright.ai"]')
-                    : null;
-                const href = linkEl ? linkEl.href : '';
-                if (!href) continue;
-
-                results.push({
-                    href,
-                    title:    cell(0),
-                    posted:   cell(1),
-                    location: cell(3) + (cell(4) ? ' – ' + cell(4) : ''),
-                    company:  cell(5),
-                    salary:   cell(6),
-                });
-            }
-            return results;
+        # Get total scroll height of the grid container
+        scroll_height: int = page.evaluate("""() => {
+            const c = document.querySelector('.antiscroll-inner');
+            return c ? c.scrollHeight : 0;
         }""")
 
-        for row in (rows_data or []):
-            href = (row.get("href") or "").strip()
-            if not href:
-                continue
-            jobs.append({
-                "title":    row.get("title") or "(no title)",
-                "company":  row.get("company") or "",
-                "location": row.get("location") or "",
-                "posted":   row.get("posted") or "",
-                "salary":   row.get("salary") or "",
-                "url":      href,
-                "category": label,
-            })
+        scroll_pos = 0
+        scroll_step = 600   # px per step — keeps ~15 new rows visible each step
+        max_iterations = 300
+
+        for _ in range(max_iterations):
+            page.evaluate(f"""() => {{
+                const c = document.querySelector('.antiscroll-inner');
+                if (c) c.scrollTop = {scroll_pos};
+            }}""")
+            page.wait_for_timeout(300)
+
+            visible: list[dict] = page.evaluate(_JS_EXTRACT_VISIBLE)
+            for row in visible:
+                ri = row.get("ri")
+                if ri is not None and ri not in rows_by_index and row.get("href"):
+                    rows_by_index[ri] = row
+
+            scroll_pos += scroll_step
+            if scroll_pos > scroll_height + scroll_step:
+                break
 
         browser.close()
 
+    jobs: list[dict[str, Any]] = []
+    for ri in sorted(rows_by_index):
+        row = rows_by_index[ri]
+        jobs.append({
+            "title":    row.get("title") or "(no title)",
+            "company":  row.get("company") or "",
+            "location": row.get("location") or "",
+            "posted":   row.get("posted") or "",
+            "salary":   row.get("salary") or "",
+            "url":      (row.get("href") or "").strip(),
+            "category": label,
+        })
     return jobs
 
 
