@@ -181,6 +181,58 @@ class TestDateNormalization:
             assert delta < 86400, f"{raw!r} resolved to {dt}, too far from now"
 
 
+class TestJobRelevance:
+    def test_machine_learning_role_is_relevant(self):
+        from app import is_relevant_job
+
+        assert is_relevant_job(
+            "Sr. AI/ML Full-Stack Engineer",
+            source="lockheedmartinjobs.com",
+            source_url="https://www.lockheedmartinjobs.com/search-jobs",
+        )
+
+    def test_data_role_is_relevant(self):
+        from app import is_relevant_job
+
+        assert is_relevant_job(
+            "Lead Data Engineer",
+            source="disneycareers.com",
+            source_url="https://www.disneycareers.com/en/search-jobs",
+        )
+
+    def test_non_tech_role_is_not_relevant(self):
+        from app import is_relevant_job
+
+        assert not is_relevant_job(
+            "Senior Financial Analyst",
+            source="lockheedmartinjobs.com",
+            source_url="https://www.lockheedmartinjobs.com/search-jobs",
+        )
+
+    def test_hospitality_role_is_not_relevant(self):
+        from app import is_relevant_job
+
+        assert not is_relevant_job(
+            "Dishwasher / Steward- Full-Time",
+            source="disneycareers.com",
+            source_url="https://www.disneycareers.com/en/search-jobs",
+        )
+
+    def test_filter_mode_and_search_query(self):
+        from app import job_matches_filters
+
+        job = {
+            "title": "Senior Data Engineer",
+            "location": "Remote, United States",
+            "source": "disneycareers.com",
+            "is_relevant": True,
+        }
+
+        assert job_matches_filters(job, filter_mode="relevant", search_query="data engineer")
+        assert job_matches_filters(job, filter_mode="all", search_query="remote")
+        assert not job_matches_filters(job, filter_mode="relevant", search_query="frontend")
+
+
 # ── fast (requests-based) extractor integration tests ─────────────────────────
 
 @pytest.mark.integration

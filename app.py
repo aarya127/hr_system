@@ -11,6 +11,107 @@ from extract_jobs import DEFAULT_URLS, extract_jobs
 
 app = Flask(__name__)
 CACHE_TTL = timedelta(minutes=5)
+# ---------------------------------------------------------------------------
+# Relevance scoring
+# Each pattern tuple: (compiled_regex, score_weight)
+# A job title + source text is scored; >= 3 = relevant.
+# Strong matches (exact tech role names) score +4 each hit.
+# Weak signals (e.g. standalone word "data") score +1.
+# Firm non-tech terms score -6, which overrides any weak positive.
+# ---------------------------------------------------------------------------
+_STRONG_KEYWORDS = "|".join([
+    # --- Machine Learning / AI ---
+    r"machine learning", r"deep learning", r"reinforcement learning",
+    r"artificial intelligence", r"ai/ml", r"mlops", r"llmops",
+    r"large language model", r"llm", r"generative ai", r"gen ai",
+    r"computer vision", r"natural language processing", r"nlp",
+    r"speech recognition", r"recommendation system", r"feature engineering",
+    r"model training", r"model evaluation", r"applied scientist",
+    r"research scientist", r"ml engineer", r"ai engineer", r"ai researcher",
+    r"ai infrastructure", r"foundation model", r"rag",
+    r"prompt engineer", r"fine.?tun",
+    # --- Data Science / Analytics ---
+    r"data scientist", r"data science",
+    r"data analyst", r"senior analyst",
+    r"analytics engineer", r"quantitative analyst", r"quant analyst",
+    r"business intelligence", r"bi engineer", r"bi developer",
+    r"reporting analyst", r"insights analyst",
+    r"statistical model", r"statistician",
+    r"a/b test", r"experimentation engineer",
+    # --- Data Engineering / Architecture ---
+    r"data engineer", r"data engineering",
+    r"data architect", r"data platform",
+    r"etl", r"elt", r"pipeline engineer",
+    r"lakehouse", r"data lake", r"data warehouse", r"data mesh",
+    r"streaming engineer", r"kafka engineer",
+    r"spark engineer", r"dbt", r"airflow",
+    r"database engineer", r"database administrator", r"dba",
+    # --- Software Engineering ---
+    r"software engineer", r"software developer", r"software engineering",
+    r"software architect", r"principal engineer",
+    r"full[ -]?stack", r"front[ -]?end", r"back[ -]?end",
+    r"mobile engineer", r"ios engineer", r"android engineer",
+    r"embedded engineer", r"embedded software",
+    r"firmware engineer",
+    r"api engineer", r"sdk engineer",
+    r"staff engineer", r"distinguished engineer",
+    # --- Infrastructure / Platform / DevOps ---
+    r"platform engineer", r"infrastructure engineer",
+    r"site reliability engineer", r"\bsre\b",
+    r"devops", r"devsecops", r"cloud engineer",
+    r"cloud architect", r"solutions architect",
+    r"kubernetes", r"\bk8s\b", r"docker",
+    r"ci/cd", r"build engineer", r"release engineer",
+    r"distributed systems", r"systems engineer",
+    r"storage engineer", r"network engineer", r"network architect",
+    r"gpu infrastructure", r"hpc engineer",
+    # --- Security / Compliance Engineering ---
+    r"security engineer", r"application security", r"appsec",
+    r"cybersecurity", r"cyber security", r"information security",
+    r"devsecops", r"penetration test", r"pentest",
+    r"identity engineer", r"iam engineer", r"zero trust",
+    r"threat intelligence",
+    # --- Technical Leadership / Management ---
+    r"engineering manager", r"principal scientist",
+    r"director of engineering", r"vp of engineering",
+    r"technical program manager", r"technical project manager",
+    r"it systems", r"it engineer", r"it architect",
+    # --- Product / UX Engineering ---
+    r"product engineer", r"growth engineer",
+    r"ux engineer", r"ui engineer",
+])
+
+TECH_INCLUDE_PATTERNS: list[tuple[re.Pattern[str], int]] = [
+    (re.compile(rf"\b({_STRONG_KEYWORDS})\b", re.IGNORECASE), 4),
+    # Weaker lone-word signals — still need a strong match unless stacked
+    (re.compile(r"\b(ai|ml|data|software|platform|cloud|automation|infrastructure|python|sql|scala|spark|golang|rust|java|typescript|kubernetes|devops|analytics|modeling|algorithm)\b", re.IGNORECASE), 1),
+]
+
+TECH_EXCLUDE_PATTERN = re.compile(
+    "|".join([
+        r"\bsales associate\b", r"\bculinary\b", r"\bdishwasher\b", r"\bsteward\b",
+        r"\bpastry\b", r"\brestaurant\b", r"\bchef\b", r"\bcashier\b",
+        r"\bretail\b", r"\bstore manager\b", r"\bstore associate\b",
+        r"\bparalegal\b", r"\blegal counsel\b", r"\battorney\b", r"\bcounsel\b",
+        r"\bcorporate communications\b", r"\bpublic relations\b", r"\bpr manager\b",
+        r"\bmarketing manager\b", r"\bbrand manager\b", r"\bcontent strategist\b",
+        r"\bevent coordinator\b", r"\bworkplace experience\b",
+        r"\bfinancial analyst\b", r"\bfinancial advisor\b", r"\bportfolio manager\b",
+        r"\btax\b", r"\baccountant\b", r"\baccounting\b", r"\baudit\b", r"\bpayroll\b",
+        r"\bhuman resources\b", r"\bhr business partner\b", r"\brecruiter\b",
+        r"\btalent acquisition\b", r"\blearning.*development\b",
+        r"\bnurse\b", r"\bphysician\b", r"\bmedical assistant\b", r"\bpharmacist\b",
+        r"\bdentist\b", r"\btherapist\b", r"\bclinical\b",
+        r"\bmechanic\b", r"\bmanufacturing technician\b", r"\bproduction operator\b",
+        r"\bassembly technician\b", r"\bquality inspector\b",
+        r"\bfacilities\b", r"\bcustodian\b", r"\bjanitorial\b",
+        r"\bsecurity officer\b", r"\bsecurity guard\b",
+        r"\bsupply chain\b", r"\bprocurement\b", r"\blogistics\b",
+        r"\bbox office\b", r"\bguestroom\b", r"\bfront desk\b", r"\bconcierge\b",
+        r"\bhousekeeping\b",
+    ]),
+    re.IGNORECASE,
+)
 _cache: Dict[str, Any] = {
     "jobs": [],
     "errors": [],
@@ -71,6 +172,42 @@ def source_name(url: str) -> str:
     return hostname.replace("www.", "")
 
 
+def normalize_job_text(*parts: str) -> str:
+    return re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip().lower()
+
+
+def score_job_relevance(title: str, *, source: str = "", source_url: str = "") -> int:
+    text = normalize_job_text(title, source, source_url)
+    score = 0
+    for pattern, weight in TECH_INCLUDE_PATTERNS:
+        if pattern.search(text):
+            score += weight
+    if TECH_EXCLUDE_PATTERN.search(text):
+        score -= 6
+    return score
+
+
+def is_relevant_job(title: str, *, source: str = "", source_url: str = "") -> bool:
+    return score_job_relevance(title, source=source, source_url=source_url) >= 3
+
+
+def job_matches_filters(job: Dict[str, Any], *, filter_mode: str, search_query: str) -> bool:
+    if filter_mode == "relevant" and not job.get("is_relevant", True):
+        return False
+
+    if search_query:
+        haystack = normalize_job_text(
+            job.get("title", ""),
+            job.get("location", ""),
+            job.get("source", ""),
+        )
+        for token in normalize_job_text(search_query).split():
+            if token not in haystack:
+                return False
+
+    return True
+
+
 def fetch_jobs(urls: List[str]) -> Dict[str, Any]:
     jobs: List[Dict[str, Any]] = []
     errors: List[Dict[str, str]] = []
@@ -91,6 +228,16 @@ def fetch_jobs(urls: List[str]) -> Dict[str, Any]:
                         "source": source,
                         "posted_date": job_date,
                         "source_url": url,
+                        "relevance_score": score_job_relevance(
+                            job.get("title", ""),
+                            source=source,
+                            source_url=url,
+                        ),
+                        "is_relevant": is_relevant_job(
+                            job.get("title", ""),
+                            source=source,
+                            source_url=url,
+                        ),
                     }
                 )
         except Exception as exc:
@@ -110,6 +257,11 @@ def _fetch_one(url: str) -> tuple[str, list, str | None]:
             posted_text = job.get("posted", "") or ""
             job_date = parse_posted_date(posted_text)
             posted_normalized = job_date.strftime("%Y-%m-%d") if job_date else posted_text
+            relevance_score = score_job_relevance(
+                job.get("title", ""),
+                source=source,
+                source_url=url,
+            )
             new_jobs.append({
                 "title": job.get("title", "(no title)"),
                 "location": job.get("location", ""),
@@ -118,6 +270,8 @@ def _fetch_one(url: str) -> tuple[str, list, str | None]:
                 "source": source,
                 "posted_date": job_date,
                 "source_url": url,
+                "relevance_score": relevance_score,
+                "is_relevant": relevance_score >= 3,
             })
         return url, new_jobs, None
     except Exception as exc:
@@ -170,6 +324,10 @@ def start_fetch_jobs() -> None:
 @app.route("/")
 def index() -> str:
     refresh = request.args.get("refresh", "0") == "1"
+    filter_mode = request.args.get("filter", "relevant").strip().lower()
+    if filter_mode not in {"all", "relevant"}:
+        filter_mode = "relevant"
+    search_query = request.args.get("q", "").strip()
     now = datetime.now()
     with _cache_lock:
         updated_at = _cache["updated_at"]
@@ -184,14 +342,23 @@ def index() -> str:
         start_fetch_jobs()
         triggered_fetch = True
 
+    filtered_jobs = [
+        job for job in jobs
+        if job_matches_filters(job, filter_mode=filter_mode, search_query=search_query)
+    ]
+
     return render_template(
         "index.html",
-        jobs=jobs,
+        jobs=filtered_jobs,
         errors=errors,
         updated_at=updated_at,
         urls=urls,
         cache_ttl_minutes=int(CACHE_TTL.total_seconds() / 60),
         loading=_cache_loading or triggered_fetch,
+        total_job_count=len(jobs),
+        relevant_job_count=sum(1 for job in jobs if job.get("is_relevant", True)),
+        filter_mode=filter_mode,
+        search_query=search_query,
     )
 
 
