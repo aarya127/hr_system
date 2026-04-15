@@ -227,96 +227,68 @@ def extract_qualcomm_jobs(url: str) -> dict[str, Any]:
 
 
 def extract_lockheed_jobs(url: str) -> dict[str, Any]:
-    html_text = request_html(url)
-    jobs = {}
+    """Lockheed Martin TalentBrew site — paginates via ?p=N (15 jobs/page, ~3500+ total)."""
+    import requests as req
 
-    for match in re.finditer(
-        r"<a[^>]+href=[\"'](?P<href>/job/[^\"']+)[\"'][^>]*data-job-id=[\"'](?P<jobid>[^\"']+)[\"'][^>]*>(?P<body>.*?)</a>",
-        html_text,
-        re.IGNORECASE | re.DOTALL,
-    ):
-        href = match.group('href').strip()
-        body = match.group('body')
-        title = ''
-        location = ''
-        posted = ''
-        full_url = urljoin(url, href)
+    parsed = urlparse(url)
+    base_url = f"https://{parsed.hostname}"
+    clean_url = f"{base_url}{parsed.path}"
+    headers = {**REQUEST_HEADERS, "Accept": "text/html"}
 
-        title_match = re.search(
-            r"<span[^>]+class=[\"'][^\"']*job-title[^\"']*[\"'][^>]*>(?P<title>[^<]+)</span>",
-            body,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if title_match:
-            title = html.unescape(title_match.group('title').strip())
-        else:
-            title = re.sub(r'<[^>]+>', '', body).strip()
-            title = html.unescape(title) or '(no title)'
+    all_jobs: list[dict] = []
+    total_jobs: int | None = None
+    total_pages: int | None = None
+    records_per_page = 15
+    seen_urls: set[str] = set()
+    page = 1
 
-        location_match = re.search(
-            r"<span[^>]+class=[\"'][^\"']*job-location[^\"']*[\"'][^>]*>(?P<location>[^<]+)</span>",
-            body,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if location_match:
-            location = html.unescape(location_match.group('location').strip())
+    while True:
+        page_url = clean_url if page == 1 else f"{clean_url}?p={page}"
+        resp = req.get(page_url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        text = resp.text
 
-        posted_match = re.search(
-            r"<span[^>]+class=[\"'][^\"']*job-date-posted[^\"']*[\"'][^>]*>(?P<posted>[^<]+)</span>",
-            body,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if posted_match:
-            posted = html.unescape(posted_match.group('posted').strip())
+        if total_jobs is None:
+            total_m = re.search(r'data-total-job-results="(\d+)"', text, re.I)
+            total_jobs = int(total_m.group(1)) if total_m else None
+            pages_m = re.search(r'data-total-pages="(\d+)"', text, re.I)
+            total_pages = int(pages_m.group(1)) if pages_m else None
+            rpp_m = re.search(r'data-records-per-page="(\d+)"', text, re.I)
+            if rpp_m:
+                records_per_page = int(rpp_m.group(1))
 
-        if not location or not posted:
-            try:
-                job_page = request_html(full_url)
-                if not location:
-                    location_match = re.search(
-                        r"<p[^>]+id=[\"']collapsible-locations[\"'][^>]*>(?P<location>[^<]+)</p>",
-                        job_page,
-                        re.IGNORECASE | re.DOTALL,
-                    )
-                    if not location_match:
-                        location_match = re.search(
-                            r"<div[^>]+class=[\"'][^\"']*locations-toggle-wrapper[^\"']*[\"'][^>]*>.*?<p[^>]+class=[\"'][^\"']*locations-collapsed[^\"']*[\"'][^>]*>(?P<location>[^<]+)</p>",
-                            job_page,
-                            re.IGNORECASE | re.DOTALL,
-                        )
-                    if location_match:
-                        location = html.unescape(location_match.group('location').strip())
+        page_jobs: list[dict] = []
+        for m in re.finditer(
+            r'<a[^>]+href="(/job/[^"]+)"[^>]*data-job-id="[^"]+"[^>]*>'
+            r'\s*<span[^>]*class="[^"]*job-title[^"]*"[^>]*>([^<]+)</span>'
+            r'(?:\s*<span[^>]*class="[^"]*job-location[^"]*"[^>]*>([^<]*)</span>)?'
+            r'(?:\s*<span[^>]*class="[^"]*job-date-posted[^"]*"[^>]*>([^<]*)</span>)?',
+            text,
+            re.I | re.S,
+        ):
+            href = m.group(1)
+            full_url = f"{base_url}{href}"
+            if full_url in seen_urls:
+                continue
+            seen_urls.add(full_url)
+            page_jobs.append({
+                "title": html.unescape(m.group(2).strip()),
+                "location": html.unescape((m.group(3) or "").strip()),
+                "posted": html.unescape((m.group(4) or "").strip()),
+                "url": full_url,
+            })
 
-                if not posted:
-                    posted_match = re.search(r'"datePosted"\s*:\s*"(?P<posted>[^"]+)"', job_page)
-                    if not posted_match:
-                        posted_match = re.search(r'Posted":"(?P<posted>[^"]+)"', job_page)
-                    if posted_match:
-                        posted = posted_match.group('posted').strip()
-                        if posted:
-                            posted = f'Posted: {posted}'
-            except Exception:
-                pass
+        all_jobs.extend(page_jobs)
 
-        job_record = {
-            'title': title,
-            'location': re.sub(r'\s+', ' ', location).strip(),
-            'posted': posted,
-            'url': full_url,
-        }
-        if full_url in jobs:
-            existing = jobs[full_url]
-            if not existing['location'] and job_record['location']:
-                existing['location'] = job_record['location']
-            if not existing['posted'] and job_record['posted']:
-                existing['posted'] = job_record['posted']
-            if not existing['title'] and job_record['title']:
-                existing['title'] = job_record['title']
-        else:
-            jobs[full_url] = job_record
+        if total_pages and page >= total_pages:
+            break
+        if len(page_jobs) == 0:
+            break
+        page += 1
+        if page > 300:  # safety cap (~4500 jobs)
+            break
 
-    deduped_jobs = list(jobs.values())
-    return {'total_jobs': len(deduped_jobs), 'jobs': deduped_jobs}
+    return {"total_jobs": total_jobs or len(all_jobs), "jobs": all_jobs}
 
 
 def extract_intuit_jobs(url: str) -> dict[str, Any]:
