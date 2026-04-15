@@ -1232,14 +1232,9 @@ _NEWGRAD_CATEGORY_LABELS: dict[str, str] = {
 def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, Any]]:
     """Render one Airtable embed page and extract all job rows via virtual-scroll traversal.
 
-    Airtable column layout (confirmed via DOM inspection):
-      col 0 – Position Title (frozen primary field)
-      col 1 – Date posted
-      col 2 – Apply button (contains the jobright.ai href)
-      col 3 – Work Model  (Hybrid / On Site / Remote)
-      col 4 – Location
-      col 5 – Company
-      col 6 – Salary
+    Column indexes are read dynamically from the header row because different embed views
+    use different column orderings (e.g. DE has Company at col 4, Location at col 8,
+    while SWE/AIML/CS have Location at col 4, Company at col 5).
 
     The grid uses virtual scrolling: only ~25–30 rows are in the DOM at any time.
     We scroll the .antiscroll-inner container in steps and harvest rows at each position.
@@ -1256,7 +1251,8 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
     # keyed by rowindex to avoid duplicates at step boundaries
     rows_by_index: dict[int, dict] = {}
 
-    _JS_EXTRACT_VISIBLE = """() => {
+    # JS template — col indexes are substituted after reading the header
+    _JS_EXTRACT_VISIBLE_TMPL = """(colMap) => {
         const riSet = new Set();
         document.querySelectorAll('[data-rowindex]').forEach(el => {
             const ri = el.getAttribute('data-rowindex');
@@ -1278,17 +1274,32 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
                 : null;
             const href = linkEl ? linkEl.href : '';
             if (!href) continue;
+            const workModel = cell(3);
+            const loc = cell(colMap.location);
             results.push({
                 ri,
                 href,
                 title:    cell(0),
                 posted:   cell(1),
-                location: cell(3) + (cell(4) ? ' \u2013 ' + cell(4) : ''),
-                company:  cell(5),
-                salary:   cell(6),
+                location: workModel + (loc ? ' \u2013 ' + loc : ''),
+                company:  cell(colMap.company),
+                salary:   cell(colMap.salary),
             });
         }
         return results;
+    }"""
+
+    _JS_READ_HEADERS = """() => {
+        // Header cells have a data-columnindex but no data-rowindex
+        const map = {};
+        document.querySelectorAll('[data-columnindex]').forEach(el => {
+            if (el.getAttribute('data-rowindex') !== null) return;
+            const ci = el.getAttribute('data-columnindex');
+            if (ci === null || map[ci]) return;
+            const txt = (el.innerText || '').trim().toLowerCase();
+            if (txt) map[ci] = txt;
+        });
+        return map;
     }"""
 
     with sync_playwright() as pw:
@@ -1303,6 +1314,16 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
             page.wait_for_selector('a[href*="jobright.ai/jobs"]', timeout=20000)
         except Exception:
             pass
+
+        # Read header row to build field→index map
+        raw_headers: dict[str, str] = page.evaluate(_JS_READ_HEADERS)
+        # raw_headers: {"0": "position title", "1": "date", "3": "work model", ...}
+        name_to_col: dict[str, str] = {v: k for k, v in raw_headers.items()}
+        col_map = {
+            "location": int(name_to_col.get("location", "4")),
+            "company":  int(name_to_col.get("company",  "5")),
+            "salary":   int(name_to_col.get("salary",   "6")),
+        }
 
         # Get total scroll height of the grid container
         scroll_height: int = page.evaluate("""() => {
@@ -1321,7 +1342,7 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
             }}""")
             page.wait_for_timeout(300)
 
-            visible: list[dict] = page.evaluate(_JS_EXTRACT_VISIBLE)
+            visible: list[dict] = page.evaluate(_JS_EXTRACT_VISIBLE_TMPL, col_map)
             for row in visible:
                 ri = row.get("ri")
                 if ri is not None and ri not in rows_by_index and row.get("href"):
