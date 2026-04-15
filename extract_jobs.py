@@ -30,7 +30,6 @@ DEFAULT_URLS = [
     "https://jobs.paloaltonetworks.com/en/search-jobs",
     "https://careers.qualcomm.com/careers",
     "https://www.lockheedmartinjobs.com/search-jobs",
-    # New sources
     "https://careers.honeywell.com/en/sites/Honeywell/jobs?lastSelectedFacet=CATEGORIES&mode=location&selectedCategoriesFacet=300000017425610%3B300000017425634&selectedOrganizationsFacet=300000011497075&sortBy=POSTING_DATES_DESC",
     "https://www.uber.com/ca/en/careers/list/?department=Data%20Science&department=Engineering",
     "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional?q=machine%20learning",
@@ -104,7 +103,6 @@ def extract_spglobal_jobs(url: str) -> dict[str, Any]:
         )
         page = context.new_page()
         page.goto(url, wait_until='domcontentloaded', timeout=120000)
-        page.wait_for_timeout(8000)
         page.wait_for_selector('a.job-title-link', timeout=30000)
 
         jobs = []
@@ -195,7 +193,6 @@ def extract_qualcomm_jobs(url: str) -> dict[str, Any]:
         )
         page = context.new_page()
         page.goto(url, wait_until='domcontentloaded', timeout=120000)
-        page.wait_for_timeout(10000)
         page.wait_for_selector('a[href^="/careers/job/"]', timeout=30000)
 
         jobs = []
@@ -377,12 +374,15 @@ def extract_stryker_jobs(url: str) -> dict[str, Any]:
         )
         page = context.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(12000)
+        try:
+            page.wait_for_selector("a.results-list__item-title--link", timeout=15000)
+        except Exception:
+            pass
 
         accept_buttons = page.locator('button:has-text("Accept All Cookies")')
         if accept_buttons.count() > 0:
             accept_buttons.first.click()
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(500)
 
         jobs = []
         locator = page.locator("a.results-list__item-title--link")
@@ -430,12 +430,15 @@ def extract_bms_jobs(url: str) -> dict[str, Any]:
         )
         page = context.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(12000)
+        try:
+            page.wait_for_selector('a[aria-label^="View job:"][href^="/careers/job/"]', timeout=15000)
+        except Exception:
+            pass
 
         accept_buttons = page.locator('button:has-text("Accept All Cookies")')
         if accept_buttons.count() > 0:
             accept_buttons.first.click()
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(500)
 
         jobs = []
         locator = page.locator('a[aria-label^="View job:"][href^="/careers/job/"]')
@@ -557,7 +560,6 @@ def extract_micron_jobs(url: str) -> dict[str, Any]:
         )
         page = context.new_page()
         page.goto(url, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(10000)
 
         body_text = page.inner_text("body")
         count_match = re.search(r"(\d+)\s+jobs", body_text)
@@ -652,7 +654,6 @@ def extract_progressive_jobs(url: str) -> dict[str, Any]:
         )
         page = context.new_page()
         page.goto(url, wait_until='domcontentloaded', timeout=60000)
-        page.wait_for_timeout(5000)
         try:
             page.wait_for_selector('a.search-results__job-title-link', timeout=20000)
         except Exception:

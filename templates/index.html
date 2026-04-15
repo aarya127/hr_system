@@ -7,8 +7,8 @@
     <script>
         // @ts-nocheck
         document.addEventListener('DOMContentLoaded', function () {
-            var noJobs = {{ 'true' if jobs|length == 0 else 'false' }};
-            if (noJobs) {
+            var isLoading = {{ 'true' if loading else 'false' }};
+            if (isLoading) {
                 setTimeout(function () {
                     window.location.reload();
                 }, 5000);
