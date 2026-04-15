@@ -490,6 +490,9 @@ def newgrad() -> str:
             if sq in (j.get("title", "") + " " + j.get("company", "") + " " + j.get("location", "")).lower()
         ]
 
+    # Sort newest first — posted is YYYY-MM-DD so lexicographic sort works
+    filtered_jobs.sort(key=lambda j: j.get("posted") or "", reverse=True)
+
     return render_template(
         "newgrad.html",
         jobs=filtered_jobs,
