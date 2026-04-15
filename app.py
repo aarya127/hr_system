@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, render_template, request
 
-from extract_jobs import DEFAULT_URLS, extract_jobs
+from extract_jobs import DEFAULT_URLS, extract_jobs, extract_newgrad_jobs
 
 app = Flask(__name__)
 CACHE_TTL = timedelta(minutes=5)
@@ -418,6 +418,87 @@ def index() -> str:
         relevant_job_count=sum(1 for job in jobs if job.get("is_relevant", True)),
         filter_mode=filter_mode,
         location_filter=location_filter,
+        search_query=search_query,
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# New-grad tab — separate cache so it doesn't block the main dashboard fetch
+# ---------------------------------------------------------------------------
+_newgrad_cache: Dict[str, Any] = {"jobs": [], "errors": [], "updated_at": None}
+_newgrad_cache_lock = threading.Lock()
+_newgrad_cache_loading = False
+NEWGRAD_CACHE_TTL = timedelta(minutes=30)   # Airtable doesn't change as fast
+
+
+def _run_newgrad_fetch() -> None:
+    global _newgrad_cache_loading
+    try:
+        result = extract_newgrad_jobs()
+        with _newgrad_cache_lock:
+            _newgrad_cache["jobs"] = result["jobs"]
+            _newgrad_cache["errors"] = result["errors"]
+            _newgrad_cache["updated_at"] = datetime.now()
+    except Exception as exc:
+        with _newgrad_cache_lock:
+            _newgrad_cache["errors"] = [str(exc)]
+    finally:
+        with _newgrad_cache_lock:
+            _newgrad_cache_loading = False
+
+
+def start_newgrad_fetch() -> None:
+    global _newgrad_cache_loading
+    with _newgrad_cache_lock:
+        if _newgrad_cache_loading:
+            return
+        _newgrad_cache_loading = True
+    threading.Thread(target=_run_newgrad_fetch, daemon=True).start()
+
+
+@app.route("/newgrad")
+def newgrad() -> str:
+    refresh = request.args.get("refresh", "0") == "1"
+    search_query = request.args.get("q", "").strip()
+    category_filter = request.args.get("cat", "all").strip().lower()
+    now = datetime.now()
+
+    with _newgrad_cache_lock:
+        updated_at = _newgrad_cache["updated_at"]
+        expired = not updated_at or now - updated_at > NEWGRAD_CACHE_TTL
+        loading = _newgrad_cache_loading
+        jobs = list(_newgrad_cache["jobs"])
+        errors = list(_newgrad_cache["errors"])
+
+    triggered_fetch = False
+    if refresh or not jobs or expired:
+        start_newgrad_fetch()
+        triggered_fetch = True
+
+    # Collect distinct category labels for the filter dropdown
+    all_categories = sorted({job.get("category", "") for job in jobs if job.get("category")})
+
+    # Apply filters
+    filtered_jobs = jobs
+    if category_filter != "all":
+        filtered_jobs = [j for j in filtered_jobs if j.get("category", "").lower() == category_filter]
+    if search_query:
+        sq = search_query.lower()
+        filtered_jobs = [
+            j for j in filtered_jobs
+            if sq in (j.get("title", "") + " " + j.get("company", "") + " " + j.get("location", "")).lower()
+        ]
+
+    return render_template(
+        "newgrad.html",
+        jobs=filtered_jobs,
+        errors=errors,
+        updated_at=updated_at,
+        loading=_newgrad_cache_loading or triggered_fetch,
+        total_job_count=len(jobs),
+        all_categories=all_categories,
+        category_filter=category_filter,
         search_query=search_query,
     )
 

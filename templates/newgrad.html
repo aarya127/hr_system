@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Job Scraper UI</title>
+    <title>New Grad Jobs</title>
     <script>
         // @ts-nocheck
         document.addEventListener('DOMContentLoaded', function () {
@@ -27,6 +27,29 @@
             max-width: 1200px;
             margin: 0 auto;
             padding: 32px;
+        }
+        .tab-nav {
+            display: flex;
+            gap: 0;
+            margin-bottom: 28px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        .tab-link {
+            padding: 10px 22px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: #4b5563;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-link:hover {
+            color: #2563eb;
+        }
+        .tab-active {
+            color: #2563eb;
+            border-bottom-color: #2563eb;
         }
         header {
             margin-bottom: 24px;
@@ -59,7 +82,7 @@
             border: 1px solid #cbd5e1;
             background: white;
             color: #0f172a;
-            min-width: 220px;
+            min-width: 200px;
         }
         .button {
             display: inline-flex;
@@ -99,20 +122,14 @@
         td a:hover {
             text-decoration: underline;
         }
-        .tag {
-            display: inline-flex;
-            gap: 6px;
-            flex-wrap: wrap;
-            margin-top: 4px;
-            font-size: 0.9rem;
-            color: #475569;
-        }
-        .tag span {
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
             background: #e0f2fe;
             color: #0c4a6e;
-            padding: 4px 8px;
-            border-radius: 999px;
-            font-size: 0.85rem;
         }
         .error {
             padding: 16px;
@@ -121,75 +138,49 @@
             background: #fee2e2;
             color: #991b1b;
         }
-        .tab-nav {
-            display: flex;
-            gap: 0;
-            margin-bottom: 28px;
-            border-bottom: 2px solid #e5e7eb;
-        }
-        .tab-link {
-            padding: 10px 22px;
-            text-decoration: none;
-            font-weight: 600;
-            font-size: 0.95rem;
-            color: #4b5563;
-            border-bottom: 3px solid transparent;
-            margin-bottom: -2px;
-            transition: color 0.15s, border-color 0.15s;
-        }
-        .tab-link:hover {
-            color: #2563eb;
-        }
-        .tab-active {
-            color: #2563eb;
-            border-bottom-color: #2563eb;
-        }
     </style>
 </head>
 <body>
 <div class="page">
     <nav class="tab-nav">
-        <a href="/" class="tab-link tab-active">Job Scraper</a>
-        <a href="/newgrad" class="tab-link">New Grad Jobs</a>
+        <a href="/" class="tab-link">Job Scraper</a>
+        <a href="/newgrad" class="tab-link tab-active">New Grad Jobs</a>
     </nav>
+
     <header>
-        <h1>Job Scraper Dashboard</h1>
+        <h1>New Grad Jobs</h1>
         <div class="meta">
             {% if jobs %}
                 <strong>{{ jobs|length }} jobs</strong>
-                {% if filter_mode == 'relevant' %}
-                    matching the tech relevance filter
+                {% if category_filter != 'all' %}
+                    in <em>{{ category_filter }}</em>
                 {% endif %}
-                from {{ urls|length }} sources.
-                {% if total_job_count is defined %}
-                    &nbsp;&middot;&nbsp; {{ relevant_job_count }} relevant out of {{ total_job_count }} total cached jobs.
-                {% endif %}
+                out of {{ total_job_count }} total listings.
             {% else %}
-                Viewing jobs from {{ urls|length }} configured sources.
+                Source: <a href="https://www.newgrad-jobs.com" target="_blank" rel="noopener">newgrad-jobs.com</a>
+                &mdash; software, AI/ML, data engineering, and cybersecurity roles.
             {% endif %}
             {% if updated_at %}
                 &nbsp;&middot;&nbsp; Last refreshed: {{ updated_at.strftime('%Y-%m-%d %H:%M:%S') }}
             {% elif loading %}
-                &nbsp;&middot;&nbsp; Loading new data... (auto-refreshing every 5 seconds)
+                &nbsp;&middot;&nbsp; Loading data... (auto-refreshing every 5 seconds)
             {% endif %}
         </div>
         <div class="actions">
-            <a class="button" href="/?refresh=1">Refresh jobs</a>
+            <a class="button" href="/newgrad?refresh=1">Refresh jobs</a>
         </div>
-        <form class="filter-form" method="get" action="/">
-            <select name="filter">
-                <option value="relevant" {% if filter_mode == 'relevant' %}selected{% endif %}>Relevant only</option>
-                <option value="all" {% if filter_mode == 'all' %}selected{% endif %}>All jobs</option>
-            </select>
-            <select name="loc">
-                <option value="na_remote" {% if location_filter == 'na_remote' %}selected{% endif %}>US / Canada / Remote</option>
-                <option value="any" {% if location_filter == 'any' %}selected{% endif %}>Any location</option>
+        <form class="filter-form" method="get" action="/newgrad">
+            <select name="cat">
+                <option value="all" {% if category_filter == 'all' %}selected{% endif %}>All categories</option>
+                {% for cat in all_categories %}
+                    <option value="{{ cat.lower() }}" {% if category_filter == cat.lower() %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
             </select>
             <input
                 type="text"
                 name="q"
                 value="{{ search_query }}"
-                placeholder="Search titles, location, or source"
+                placeholder="Search title, company, or location"
             />
             <button class="button" type="submit">Apply filter</button>
         </form>
@@ -200,7 +191,7 @@
             <strong>Extraction errors:</strong>
             <ul>
                 {% for err in errors %}
-                    <li><strong>{{ err.url }}</strong>: {{ err.message }}</li>
+                    <li>{{ err }}</li>
                 {% endfor %}
             </ul>
         </div>
@@ -210,9 +201,10 @@
         <thead>
             <tr>
                 <th>Title</th>
+                <th>Company</th>
                 <th>Location</th>
                 <th>Posted</th>
-                <th>Source</th>
+                <th>Category</th>
                 <th>Link</th>
             </tr>
         </thead>
@@ -220,9 +212,10 @@
             {% for job in jobs %}
                 <tr>
                     <td>{{ job.title }}</td>
-                    <td>{{ job.location }}</td>
-                    <td>{{ job.posted or 'Unknown' }}</td>
-                    <td>{{ job.source }}</td>
+                    <td>{{ job.company or '—' }}</td>
+                    <td>{{ job.location or '—' }}</td>
+                    <td>{{ job.posted or '—' }}</td>
+                    <td><span class="badge">{{ job.category or '—' }}</span></td>
                     <td><a href="{{ job.url }}" target="_blank" rel="noopener">Open</a></td>
                 </tr>
             {% endfor %}
@@ -230,7 +223,7 @@
     </table>
 
     {% if not jobs %}
-        <p>{% if loading %}No jobs are available yet; fetching data in the background. Refresh after a moment.{% else %}No jobs match the current filter. Broaden the search query or switch to All jobs.{% endif %}</p>
+        <p>{% if loading %}No jobs yet &mdash; fetching in the background. This page will auto-refresh in 5 seconds.{% else %}No jobs match the current filters.{% endif %}</p>
     {% endif %}
 </div>
 </body>

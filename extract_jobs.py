@@ -1214,6 +1214,121 @@ def extract_applovin_jobs(url: str) -> dict[str, Any]:
     return {'total_jobs': len(jobs), 'jobs': jobs}
 
 
+_NEWGRAD_CATEGORY_EMBEDS: dict[str, str] = {
+    "swe":  "https://airtable.com/embed/appjDG7vmPOm1pO7S/shr763VHjlzPBDCgN",
+    "aiml": "https://airtable.com/embed/appoxNzAIRReFCzZV/shrmDBF1vNPtzNjzl",
+    "de":   "https://airtable.com/embed/appqYfRGKpLQ8UsdH/shrFnvW20reJCEkYZ",
+    "cs":   "https://airtable.com/embed/app5K4hbJeNczKe80/shrmicWx3O72527KW",
+}
+
+_NEWGRAD_CATEGORY_LABELS: dict[str, str] = {
+    "swe":  "Software Engineering",
+    "aiml": "AI / ML",
+    "de":   "Data Engineering",
+    "cs":   "Cybersecurity",
+}
+
+
+def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, Any]]:
+    """Render one Airtable embed page and extract all visible job rows."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise ImportError(
+            "Playwright is required for newgrad-jobs.com scraping. "
+            "Install with: pip install playwright && playwright install chromium"
+        ) from exc
+
+    label = _NEWGRAD_CATEGORY_LABELS.get(category, category)
+    jobs: list[dict[str, Any]] = []
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        context = browser.new_context(user_agent=REQUEST_HEADERS["User-Agent"])
+        page = context.new_page()
+        page.goto(embed_url, wait_until="domcontentloaded", timeout=30000)
+        # Wait for job links to appear
+        try:
+            page.wait_for_selector('a[href*="jobright.ai/jobs"]', timeout=20000)
+        except Exception:
+            pass
+
+        links = page.locator('a[href*="jobright.ai/jobs"]')
+        for i in range(links.count()):
+            link = links.nth(i)
+            href = (link.get_attribute("href") or "").strip()
+            if not href:
+                continue
+
+            # Walk up DOM to find the nearest row ancestor for context text
+            row_text: str = link.evaluate("""el => {
+                let node = el.parentElement;
+                let depth = 0;
+                while (node && depth < 10) {
+                    const tag = node.tagName || '';
+                    if (tag === 'TR' || (node.className && node.className.includes('Row'))) {
+                        return node.innerText;
+                    }
+                    node = node.parentElement;
+                    depth++;
+                }
+                // fallback: parent container text
+                return el.closest('td,div') ? el.closest('td,div').innerText : el.innerText;
+            }""")
+            lines = [ln.strip() for ln in (row_text or "").splitlines() if ln.strip()]
+
+            # The link text itself is typically the job title
+            title = (link.inner_text().strip() or (lines[0] if lines else "(no title)"))
+            # Remaining lines may carry company / location / date
+            company = lines[1] if len(lines) > 1 else ""
+            location = lines[2] if len(lines) > 2 else ""
+            posted   = lines[-1] if len(lines) > 3 else ""
+
+            jobs.append({
+                "title":    title,
+                "company":  company,
+                "location": location,
+                "posted":   posted,
+                "url":      href,
+                "category": label,
+            })
+
+        browser.close()
+
+    return jobs
+
+
+def extract_newgrad_jobs() -> dict[str, Any]:
+    """Scrape all four newgrad-jobs.com categories and deduplicate by job URL."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    all_jobs: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            pool.submit(_scrape_newgrad_category, cat, url): cat
+            for cat, url in _NEWGRAD_CATEGORY_EMBEDS.items()
+        }
+        for future in as_completed(futures):
+            cat = futures[future]
+            try:
+                all_jobs.extend(future.result())
+            except Exception as exc:
+                errors.append(f"{cat}: {exc}")
+
+    # Deduplicate by canonical job URL (strip UTM params)
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for job in all_jobs:
+        canonical = re.split(r"[?#]", job["url"])[0].rstrip("/")
+        if canonical not in seen:
+            seen.add(canonical)
+            unique.append(job)
+
+    return {"jobs": unique, "errors": errors}
+
+
 def extract_jobs(url: str) -> dict[str, Any]:
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
