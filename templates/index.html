@@ -154,6 +154,10 @@
                 <option value="relevant" {% if filter_mode == 'relevant' %}selected{% endif %}>Relevant only</option>
                 <option value="all" {% if filter_mode == 'all' %}selected{% endif %}>All jobs</option>
             </select>
+            <select name="loc">
+                <option value="na_remote" {% if location_filter == 'na_remote' %}selected{% endif %}>US / Canada / Remote</option>
+                <option value="any" {% if location_filter == 'any' %}selected{% endif %}>Any location</option>
+            </select>
             <input
                 type="text"
                 name="q"

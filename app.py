@@ -191,8 +191,59 @@ def is_relevant_job(title: str, *, source: str = "", source_url: str = "") -> bo
     return score_job_relevance(title, source=source, source_url=source_url) >= 3
 
 
-def job_matches_filters(job: Dict[str, Any], *, filter_mode: str, search_query: str) -> bool:
+_LOCATION_US = re.compile(
+    r"\b(united states|usa|us|u\.s\.a?|america|alabama|alaska|arizona|arkansas|california|colorado|"
+    r"connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|"
+    r"louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|"
+    r"nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|"
+    r"ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|"
+    r"utah|vermont|virginia|washington|west virginia|wisconsin|wyoming|"
+    r"\bdc\b|district of columbia|san francisco|seattle|austin|boston|chicago|dallas|denver|"
+    r"los angeles|new york city|nyc|atlanta|miami|portland|phoenix|san diego|san jose|raleigh|"
+    r"minneapolis|detroit|charlotte|nashville|houston|philadelphia|pittsburgh|salt lake)\b",
+    re.IGNORECASE,
+)
+_LOCATION_CA = re.compile(
+    r"\b(canada|canadian|ontario|quebec|british columbia|alberta|saskatchewan|manitoba|"
+    r"nova scotia|new brunswick|newfoundland|prince edward island|northwest territories|nunavut|yukon|"
+    r"toronto|montreal|vancouver|calgary|edmonton|ottawa|winnipeg|hamilton|kitchener|waterloo|"
+    r"richmond hill|markham|mississauga)\b",
+    re.IGNORECASE,
+)
+_LOCATION_REMOTE = re.compile(r"\b(remote|work from home|wfh|distributed|anywhere)\b", re.IGNORECASE)
+_LOCATION_MULTIPLE = re.compile(r"\b(multiple|various|several)\b", re.IGNORECASE)
+
+
+def location_allowed(location: str, location_filter: str) -> bool:
+    """Return True when the job's location matches the active location filter."""
+    if location_filter == "any":
+        return True
+    loc = (location or "").strip()
+    if not loc:
+        # Unknown location — keep it so we don't accidentally hide legit remote roles
+        return True
+    if _LOCATION_MULTIPLE.search(loc):
+        return True
+    if _LOCATION_REMOTE.search(loc):
+        return True
+    if _LOCATION_US.search(loc):
+        return True
+    if _LOCATION_CA.search(loc):
+        return True
+    return False
+
+
+def job_matches_filters(
+    job: Dict[str, Any],
+    *,
+    filter_mode: str,
+    search_query: str,
+    location_filter: str = "na_remote",
+) -> bool:
     if filter_mode == "relevant" and not job.get("is_relevant", True):
+        return False
+
+    if location_filter != "any" and not location_allowed(job.get("location", ""), location_filter):
         return False
 
     if search_query:
@@ -327,6 +378,9 @@ def index() -> str:
     filter_mode = request.args.get("filter", "relevant").strip().lower()
     if filter_mode not in {"all", "relevant"}:
         filter_mode = "relevant"
+    location_filter = request.args.get("loc", "na_remote").strip().lower()
+    if location_filter not in {"na_remote", "any"}:
+        location_filter = "na_remote"
     search_query = request.args.get("q", "").strip()
     now = datetime.now()
     with _cache_lock:
@@ -344,7 +398,12 @@ def index() -> str:
 
     filtered_jobs = [
         job for job in jobs
-        if job_matches_filters(job, filter_mode=filter_mode, search_query=search_query)
+        if job_matches_filters(
+            job,
+            filter_mode=filter_mode,
+            search_query=search_query,
+            location_filter=location_filter,
+        )
     ]
 
     return render_template(
@@ -358,6 +417,7 @@ def index() -> str:
         total_job_count=len(jobs),
         relevant_job_count=sum(1 for job in jobs if job.get("is_relevant", True)),
         filter_mode=filter_mode,
+        location_filter=location_filter,
         search_query=search_query,
     )
 
