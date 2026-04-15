@@ -35,6 +35,11 @@ DEFAULT_URLS = [
     "https://www.uber.com/ca/en/careers/list/?department=Data%20Science&department=Engineering",
     "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional?q=machine%20learning",
     "https://analogdevices.wd1.myworkdayjobs.com/External?q=machine%20learning",
+    "https://www.arista.com/en/careers/engineering",
+    "https://jobs.boeing.com/search-jobs/machine%20learning/185/1",
+    "https://www.schwabjobs.com/search-jobs",
+    "https://www.disneycareers.com/en/search-jobs",
+    "https://careers.salesforce.com/en/jobs/?search=&country=Canada&country=United+States+of+America&pagesize=20#results",
 ]
 
 
@@ -926,6 +931,251 @@ def extract_uber_jobs(url: str) -> dict[str, Any]:
     return {"total_jobs": len(jobs), "jobs": jobs}
 
 
+def extract_boeing_jobs(url: str) -> dict[str, Any]:
+    """TalentBrew-based Boeing careers site — server-rendered HTML, paginated."""
+    import requests as req
+    from urllib.parse import unquote
+
+    parsed = urlparse(url)
+    # Path format: /search-jobs/{keyword}/{org_id}/{page}
+    parts = [p for p in parsed.path.strip("/").split("/") if p]
+    # parts[0]='search-jobs', parts[1]=keyword, parts[2]=org_id, parts[3]=page
+    keyword = unquote(parts[1]) if len(parts) > 1 else ""
+    org_id = parts[2] if len(parts) > 2 else "185"
+    base = f"https://{parsed.hostname}/search-jobs/{parsed.path.strip('/').split('/')[1]}/{org_id}"
+
+    headers = {**REQUEST_HEADERS, "Accept": "text/html"}
+    all_jobs: list[dict] = []
+    total_jobs: int | None = None
+    page = 1
+
+    while True:
+        page_url = f"{base}/{page}"
+        resp = req.get(page_url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        text = resp.text
+
+        if total_jobs is None:
+            tm = re.search(r'["\'>](\d+)\s+results\s+found', text, re.I)
+            if tm:
+                total_jobs = int(tm.group(1).replace(",", ""))
+
+        titles = re.findall(
+            r'<span class="search-results__job-title">([^<]+)</span>', text, re.I
+        )
+        if not titles:
+            break
+
+        links = re.findall(
+            r'<a class="search-results__job-link" href="([^"]+)"', text, re.I
+        )
+        locations = re.findall(
+            r'<span class="search-results__job-info location">([^<]+)</span>', text, re.I
+        )
+        dates = re.findall(
+            r'<span class="search-results__job-info date">([^<]+)</span>', text, re.I
+        )
+
+        for i, title in enumerate(titles):
+            href = links[i] if i < len(links) else ""
+            all_jobs.append({
+                "title": html.unescape(title.strip()),
+                "location": html.unescape(locations[i].strip()) if i < len(locations) else "",
+                "posted": dates[i].strip() if i < len(dates) else "",
+                "url": f"https://{parsed.hostname}{href}" if href else "",
+            })
+
+        page += 1
+        if total_jobs and len(all_jobs) >= total_jobs:
+            break
+        if page > 50:  # safety cap
+            break
+
+    return {"total_jobs": total_jobs or len(all_jobs), "jobs": all_jobs}
+
+
+def extract_schwab_jobs(url: str) -> dict[str, Any]:
+    """TalentBrew-based Schwab careers site — server-rendered HTML (first page)."""
+    import requests as req
+
+    parsed = urlparse(url)
+    headers = {**REQUEST_HEADERS, "Accept": "text/html"}
+    resp = req.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    text = resp.text
+
+    total_m = re.search(r'<h1[^>]*>(\d[\d,]*)\s+results', text, re.I)
+    total_jobs = int(total_m.group(1).replace(",", "")) if total_m else None
+
+    jobs: list[dict] = []
+    # Each job: <a href="/job/..." data-job-id="..."><h2>title</h2><span class="job-location">loc</span>
+    for m in re.finditer(
+        r'<a\s+href="(/job/[^"]+)"[^>]*data-job-id="([^"]+)"[^>]*>'
+        r'.*?<h2[^>]*>([^<]+)</h2>'
+        r'.*?<span class="job-location">([^<]+)</span>',
+        text,
+        re.I | re.S,
+    ):
+        href, _, title, location = m.group(1), m.group(2), m.group(3), m.group(4)
+        jobs.append({
+            "title": html.unescape(title.strip()),
+            "location": html.unescape(location.strip()),
+            "posted": "",
+            "url": f"https://{parsed.hostname}{href}",
+        })
+
+    return {"total_jobs": total_jobs, "jobs": jobs}
+
+
+def extract_disney_jobs(url: str) -> dict[str, Any]:
+    """TalentBrew-based Disney careers site — server-rendered HTML (SSR gives first page of results)."""
+    import requests as req
+
+    parsed = urlparse(url)
+    base_url = f"https://{parsed.hostname}"
+    headers = {**REQUEST_HEADERS, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
+
+    r = req.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    html_text = r.text
+
+    # Total from section data attributes (e.g. data-total-job-results="761")
+    total_m = re.search(r'data-total-job-results="(\d+)"', html_text, re.I) or \
+              re.search(r'data-results-count="(\d+)"', html_text, re.I)
+    total_jobs = int(total_m.group(1)) if total_m else None
+
+    jobs: list[dict] = []
+    for m in re.finditer(
+        r'<a\s+href="(/en/job/[^"]+)"[^>]*data-job-id="[^"]+"[^>]*>'
+        r'.*?<h2[^>]*>([^<]+)</h2>'
+        r'(?:.*?<span class="job-location">([^<]*)</span>)?'
+        r'(?:.*?<span class="job-date-posted">([^<]*)</span>)?',
+        html_text,
+        re.I | re.S,
+    ):
+        href, title = m.group(1), m.group(2)
+        location = m.group(3) or ""
+        posted = m.group(4) or ""
+        jobs.append({
+            "title": html.unescape(title.strip()),
+            "location": html.unescape(location.strip()),
+            "posted": posted.strip(),
+            "url": f"{base_url}{href}",
+        })
+
+    return {"total_jobs": total_jobs or len(jobs), "jobs": jobs}
+
+
+def extract_salesforce_jobs(url: str) -> dict[str, Any]:
+    """Salesforce careers site — server-rendered HTML with card.card-job, paginated."""
+    import requests as req
+    from urllib.parse import parse_qs
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    countries = qs.get("country", [])
+    search = qs.get("search", [""])[0]
+    try:
+        pagesize = int(qs.get("pagesize", ["20"])[0])
+    except (ValueError, IndexError):
+        pagesize = 20
+
+    base_url = f"https://{parsed.hostname}"
+    headers = {**REQUEST_HEADERS, "Accept": "text/html"}
+
+    def build_url(page: int) -> str:
+        params = f"search={search}&pagesize={pagesize}&page={page}"
+        for c in countries:
+            params += f"&country={c}"
+        return f"{base_url}{parsed.path}?{params}"
+
+    all_jobs: list[dict] = []
+    page = 1
+
+    while True:
+        resp = req.get(build_url(page), headers=headers, timeout=30)
+        resp.raise_for_status()
+        text = resp.text
+
+        # Each card: <div class="card card-job">...<h3 class="card-title"><a href="/en/jobs/...">title</a>
+        #   ...<ul class="list-inline locations"><li>loc1</li></ul>
+        card_blocks = re.findall(
+            r'<div class="card card-job">(.*?)</div>\s*</div>',
+            text,
+            re.I | re.S,
+        )
+        if not card_blocks:
+            break
+
+        for block in card_blocks:
+            title_m = re.search(
+                r'<a[^>]+href="(/en/jobs/[^"]+)"[^>]*>([^<]+)</a>', block, re.I
+            )
+            if not title_m:
+                continue
+            href, title = title_m.group(1), title_m.group(2)
+            locs = re.findall(r'<li class="list-inline-item">([^<]+)</li>', block, re.I)
+            location = ", ".join(l.strip() for l in locs if l.strip())
+            all_jobs.append({
+                "title": html.unescape(title.strip()),
+                "location": html.unescape(location),
+                "posted": "",
+                "url": f"{base_url}{href}",
+            })
+
+        if len(card_blocks) < pagesize:
+            break
+        page += 1
+        if page > 100:  # safety cap
+            break
+
+    return {"total_jobs": len(all_jobs), "jobs": all_jobs}
+
+
+def extract_arista_jobs(url: str) -> dict[str, Any]:
+    """Arista careers SPA — currently blocked by Fastly CDN (HTTP 406 for all clients).
+
+    Attempts a plain HTTP request first; returns empty if the site is inaccessible.
+    If Arista's CDN policy ever changes, the regex below will parse /en/careers/ job links.
+    """
+    import requests as req
+
+    parsed = urlparse(url)
+    base_url = f"https://{parsed.hostname}"
+
+    try:
+        r = req.get(url, headers=REQUEST_HEADERS, timeout=15, allow_redirects=True)
+        html_text = r.text if r.status_code == 200 else ""
+    except Exception:
+        html_text = ""
+
+    if not html_text:
+        return {"total_jobs": 0, "jobs": []}
+
+    # If the page becomes accessible, parse /en/careers/{path} job links
+    jobs: list[dict] = []
+    nav_hrefs = {"/en/careers", "/en/careers/engineering", "/en/careers/operations",
+                 "/en/careers/sales-marketing", "/en/careers/business-support"}
+    for m in re.finditer(
+        r'<a[^>]+href="(/en/careers/[^"#]+)"[^>]*>([^<]{5,120})</a>',
+        html_text,
+        re.I,
+    ):
+        href, text_val = m.group(1), m.group(2).strip()
+        if href.rstrip("/") in nav_hrefs or len(text_val) < 5:
+            continue
+        jobs.append({
+            "title": html.unescape(text_val),
+            "location": "",
+            "posted": "",
+            "url": f"{base_url}{href}",
+        })
+
+    seen: set[str] = set()
+    unique_jobs = [j for j in jobs if not (j["url"] in seen or seen.add(j["url"]))]  # type: ignore[func-returns-value]
+    return {"total_jobs": len(unique_jobs), "jobs": unique_jobs}
+
+
 def extract_applovin_jobs(url: str) -> dict[str, Any]:
     import json as _json
     api_url = 'https://boards-api.greenhouse.io/v1/boards/applovin/jobs'
@@ -986,6 +1236,16 @@ def extract_jobs(url: str) -> dict[str, Any]:
         return extract_honeywell_jobs(url)
     if "uber.com" in hostname:
         return extract_uber_jobs(url)
+    if "jobs.boeing.com" in hostname:
+        return extract_boeing_jobs(url)
+    if "schwabjobs.com" in hostname:
+        return extract_schwab_jobs(url)
+    if "disneycareers.com" in hostname:
+        return extract_disney_jobs(url)
+    if "careers.salesforce.com" in hostname:
+        return extract_salesforce_jobs(url)
+    if "arista.com" in hostname:
+        return extract_arista_jobs(url)
 
     raise ValueError(f"Unsupported URL host: {hostname}")
 
