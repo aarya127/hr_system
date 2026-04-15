@@ -995,75 +995,120 @@ def extract_boeing_jobs(url: str) -> dict[str, Any]:
 
 
 def extract_schwab_jobs(url: str) -> dict[str, Any]:
-    """TalentBrew-based Schwab careers site — server-rendered HTML (first page)."""
-    import requests as req
-
-    parsed = urlparse(url)
-    headers = {**REQUEST_HEADERS, "Accept": "text/html"}
-    resp = req.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
-    text = resp.text
-
-    total_m = re.search(r'<h1[^>]*>(\d[\d,]*)\s+results', text, re.I)
-    total_jobs = int(total_m.group(1).replace(",", "")) if total_m else None
-
-    jobs: list[dict] = []
-    # Each job: <a href="/job/..." data-job-id="..."><h2>title</h2><span class="job-location">loc</span>
-    for m in re.finditer(
-        r'<a\s+href="(/job/[^"]+)"[^>]*data-job-id="([^"]+)"[^>]*>'
-        r'.*?<h2[^>]*>([^<]+)</h2>'
-        r'.*?<span class="job-location">([^<]+)</span>',
-        text,
-        re.I | re.S,
-    ):
-        href, _, title, location = m.group(1), m.group(2), m.group(3), m.group(4)
-        jobs.append({
-            "title": html.unescape(title.strip()),
-            "location": html.unescape(location.strip()),
-            "posted": "",
-            "url": f"https://{parsed.hostname}{href}",
-        })
-
-    return {"total_jobs": total_jobs, "jobs": jobs}
-
-
-def extract_disney_jobs(url: str) -> dict[str, Any]:
-    """TalentBrew-based Disney careers site — server-rendered HTML (SSR gives first page of results)."""
+    """TalentBrew-based Schwab careers site — paginates via ?p=N (20 jobs/page)."""
     import requests as req
 
     parsed = urlparse(url)
     base_url = f"https://{parsed.hostname}"
-    headers = {**REQUEST_HEADERS, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
+    clean_url = f"{base_url}{parsed.path}"  # drop any existing query string
+    headers = {**REQUEST_HEADERS, "Accept": "text/html"}
 
-    r = req.get(url, headers=headers, timeout=30)
-    r.raise_for_status()
-    html_text = r.text
+    all_jobs: list[dict] = []
+    total_jobs: int | None = None
+    records_per_page = 20
+    page = 1
 
-    # Total from section data attributes (e.g. data-total-job-results="761")
-    total_m = re.search(r'data-total-job-results="(\d+)"', html_text, re.I) or \
-              re.search(r'data-results-count="(\d+)"', html_text, re.I)
-    total_jobs = int(total_m.group(1)) if total_m else None
+    while True:
+        page_url = clean_url if page == 1 else f"{clean_url}?p={page}"
+        resp = req.get(page_url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        text = resp.text
 
-    jobs: list[dict] = []
-    for m in re.finditer(
-        r'<a\s+href="(/en/job/[^"]+)"[^>]*data-job-id="[^"]+"[^>]*>'
-        r'.*?<h2[^>]*>([^<]+)</h2>'
-        r'(?:.*?<span class="job-location">([^<]*)</span>)?'
-        r'(?:.*?<span class="job-date-posted">([^<]*)</span>)?',
-        html_text,
-        re.I | re.S,
-    ):
-        href, title = m.group(1), m.group(2)
-        location = m.group(3) or ""
-        posted = m.group(4) or ""
-        jobs.append({
-            "title": html.unescape(title.strip()),
-            "location": html.unescape(location.strip()),
-            "posted": posted.strip(),
-            "url": f"{base_url}{href}",
-        })
+        if total_jobs is None:
+            total_m = re.search(r'data-total-job-results="(\d+)"', text, re.I)
+            total_jobs = int(total_m.group(1)) if total_m else None
+            rpp_m = re.search(r'data-records-per-page="(\d+)"', text, re.I)
+            if rpp_m:
+                records_per_page = int(rpp_m.group(1))
 
-    return {"total_jobs": total_jobs or len(jobs), "jobs": jobs}
+        page_jobs: list[dict] = []
+        for m in re.finditer(
+            r'<a\s+href="(/job/[^"]+)"[^>]*data-job-id="[^"]+"[^>]*>'
+            r'.*?<h2[^>]*>([^<]+)</h2>'
+            r'(?:.*?<span class="(?:job-)?location">([^<]*)</span>)?',
+            text,
+            re.I | re.S,
+        ):
+            href, title = m.group(1), m.group(2)
+            location = m.group(3) or ""
+            page_jobs.append({
+                "title": html.unescape(title.strip()),
+                "location": html.unescape(location.strip()),
+                "posted": "",
+                "url": f"{base_url}{href}",
+            })
+
+        all_jobs.extend(page_jobs)
+
+        if len(page_jobs) < records_per_page:
+            break
+        if total_jobs and len(all_jobs) >= total_jobs:
+            break
+        page += 1
+        if page > 50:  # safety cap
+            break
+
+    return {"total_jobs": total_jobs or len(all_jobs), "jobs": all_jobs}
+
+
+def extract_disney_jobs(url: str) -> dict[str, Any]:
+    """TalentBrew-based Disney careers site — paginates via ?p=N (10 jobs/page)."""
+    import requests as req
+
+    parsed = urlparse(url)
+    base_url = f"https://{parsed.hostname}"
+    clean_url = f"{base_url}{parsed.path}"  # drop any existing query string
+    headers = {**REQUEST_HEADERS, "Accept": "text/html"}
+
+    all_jobs: list[dict] = []
+    total_jobs: int | None = None
+    total_pages: int | None = None
+    records_per_page = 10
+    page = 1
+
+    while True:
+        page_url = clean_url if page == 1 else f"{clean_url}?p={page}"
+        r = req.get(page_url, headers=headers, timeout=30)
+        r.raise_for_status()
+        text = r.text
+
+        if total_jobs is None:
+            total_m = re.search(r'data-total-job-results="(\d+)"', text, re.I)
+            total_jobs = int(total_m.group(1)) if total_m else None
+            pages_m = re.search(r'data-total-pages="(\d+)"', text, re.I)
+            total_pages = int(pages_m.group(1)) if pages_m else None
+            rpp_m = re.search(r'data-records-per-page="(\d+)"', text, re.I)
+            if rpp_m:
+                records_per_page = int(rpp_m.group(1))
+
+        page_jobs: list[dict] = []
+        for m in re.finditer(
+            r'<a\s+href="(/en/job/[^"]+)"[^>]*data-job-id="[^"]+"[^>]*>'
+            r'.*?<h2[^>]*>([^<]+)</h2>'
+            r'(?:.*?<span class="job-location">([^<]*)</span>)?',
+            text,
+            re.I | re.S,
+        ):
+            href, title = m.group(1), m.group(2)
+            location = m.group(3) or ""
+            page_jobs.append({
+                "title": html.unescape(title.strip()),
+                "location": html.unescape(location.strip()),
+                "posted": "",
+                "url": f"{base_url}{href}",
+            })
+
+        all_jobs.extend(page_jobs)
+
+        if total_pages and page >= total_pages:
+            break
+        if len(page_jobs) < records_per_page:
+            break
+        page += 1
+        if page > 100:  # safety cap
+            break
+
+    return {"total_jobs": total_jobs or len(all_jobs), "jobs": all_jobs}
 
 
 def extract_salesforce_jobs(url: str) -> dict[str, Any]:
