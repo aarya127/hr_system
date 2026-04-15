@@ -1230,7 +1230,18 @@ _NEWGRAD_CATEGORY_LABELS: dict[str, str] = {
 
 
 def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, Any]]:
-    """Render one Airtable embed page and extract all visible job rows."""
+    """Render one Airtable embed page and extract all visible job rows.
+
+    Airtable column layout (confirmed via DOM inspection):
+      col 0 – Position Title (frozen primary field)
+      col 1 – Date posted
+      col 2 – Apply button (contains the jobright.ai href)
+      col 3 – Work Model  (Hybrid / On Site / Remote)
+      col 4 – Location
+      col 5 – Company
+      col 6 – Salary
+      col 9 – Qualifications / requirements
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -1247,48 +1258,59 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
         context = browser.new_context(user_agent=REQUEST_HEADERS["User-Agent"])
         page = context.new_page()
         page.goto(embed_url, wait_until="domcontentloaded", timeout=30000)
-        # Wait for job links to appear
         try:
             page.wait_for_selector('a[href*="jobright.ai/jobs"]', timeout=20000)
         except Exception:
             pass
 
-        links = page.locator('a[href*="jobright.ai/jobs"]')
-        for i in range(links.count()):
-            link = links.nth(i)
-            href = (link.get_attribute("href") or "").strip()
+        rows_data: list[dict] = page.evaluate("""() => {
+            // Collect every distinct numeric rowindex present in the DOM
+            const riSet = new Set();
+            document.querySelectorAll('[data-rowindex]').forEach(el => {
+                const ri = el.getAttribute('data-rowindex');
+                if (ri !== null && ri !== '' && !isNaN(Number(ri))) riSet.add(Number(ri));
+            });
+
+            const results = [];
+            for (const ri of [...riSet].sort((a,b)=>a-b)) {
+                const cell = ci => {
+                    const el = document.querySelector(
+                        `[data-rowindex="${ri}"][data-columnindex="${ci}"]`
+                    );
+                    return el ? (el.innerText || '').trim() : '';
+                };
+                // Apply link lives in col 2
+                const applyCell = document.querySelector(
+                    `[data-rowindex="${ri}"][data-columnindex="2"]`
+                );
+                const linkEl = applyCell
+                    ? applyCell.querySelector('a[href*="jobright.ai"]')
+                    : null;
+                const href = linkEl ? linkEl.href : '';
+                if (!href) continue;
+
+                results.push({
+                    href,
+                    title:    cell(0),
+                    posted:   cell(1),
+                    location: cell(3) + (cell(4) ? ' – ' + cell(4) : ''),
+                    company:  cell(5),
+                    salary:   cell(6),
+                });
+            }
+            return results;
+        }""")
+
+        for row in (rows_data or []):
+            href = (row.get("href") or "").strip()
             if not href:
                 continue
-
-            # Walk up DOM to find the nearest row ancestor for context text
-            row_text: str = link.evaluate("""el => {
-                let node = el.parentElement;
-                let depth = 0;
-                while (node && depth < 10) {
-                    const tag = node.tagName || '';
-                    if (tag === 'TR' || (node.className && node.className.includes('Row'))) {
-                        return node.innerText;
-                    }
-                    node = node.parentElement;
-                    depth++;
-                }
-                // fallback: parent container text
-                return el.closest('td,div') ? el.closest('td,div').innerText : el.innerText;
-            }""")
-            lines = [ln.strip() for ln in (row_text or "").splitlines() if ln.strip()]
-
-            # The link text itself is typically the job title
-            title = (link.inner_text().strip() or (lines[0] if lines else "(no title)"))
-            # Remaining lines may carry company / location / date
-            company = lines[1] if len(lines) > 1 else ""
-            location = lines[2] if len(lines) > 2 else ""
-            posted   = lines[-1] if len(lines) > 3 else ""
-
             jobs.append({
-                "title":    title,
-                "company":  company,
-                "location": location,
-                "posted":   posted,
+                "title":    row.get("title") or "(no title)",
+                "company":  row.get("company") or "",
+                "location": row.get("location") or "",
+                "posted":   row.get("posted") or "",
+                "salary":   row.get("salary") or "",
                 "url":      href,
                 "category": label,
             })

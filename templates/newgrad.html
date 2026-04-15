@@ -203,6 +203,7 @@
                 <th>Title</th>
                 <th>Company</th>
                 <th>Location</th>
+                <th>Salary</th>
                 <th>Posted</th>
                 <th>Category</th>
                 <th>Link</th>
@@ -214,6 +215,7 @@
                     <td>{{ job.title }}</td>
                     <td>{{ job.company or '—' }}</td>
                     <td>{{ job.location or '—' }}</td>
+                    <td>{{ job.salary or '—' }}</td>
                     <td>{{ job.posted or '—' }}</td>
                     <td><span class="badge">{{ job.category or '—' }}</span></td>
                     <td><a href="{{ job.url }}" target="_blank" rel="noopener">Open</a></td>
