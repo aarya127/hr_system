@@ -5,11 +5,15 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
-from flask import Flask, render_template, request
+import urllib.request
+import urllib.parse
+import json
+from flask import Flask, render_template, request, session
 
 from extract_jobs import DEFAULT_URLS, extract_jobs, extract_newgrad_jobs
 
 app = Flask(__name__)
+app.secret_key = "hr-system-applied-tracker-key"
 CACHE_TTL = timedelta(minutes=5)
 # ---------------------------------------------------------------------------
 # Relevance scoring
@@ -502,6 +506,143 @@ def newgrad() -> str:
         total_job_count=len(jobs),
         all_categories=all_categories,
         category_filter=category_filter,
+        search_query=search_query,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Applied jobs tracker — reads from Microsoft Graph (user's mailbox)
+# ---------------------------------------------------------------------------
+
+# Subjects/senders that signal a job application confirmation
+_APPLICATION_SUBJECTS = re.compile(
+    r"application|applied|thank you for applying|we received your|your application"
+    r"|application received|submission confirmed",
+    re.IGNORECASE,
+)
+_APPLICATION_SENDERS = re.compile(
+    r"greenhouse\.io|lever\.co|workday\.com|icims\.com|jobvite\.com"
+    r"|smartrecruiters\.com|taleo\.net|successfactors\.com|myworkdayjobs\.com"
+    r"|linkedin\.com|indeed\.com|noreply|no-reply|careers|recruiting|talent",
+    re.IGNORECASE,
+)
+
+
+def _graph_request(access_token: str, path: str) -> dict:
+    """Make a GET request to Microsoft Graph and return parsed JSON."""
+    url = f"https://graph.microsoft.com/v1.0{path}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        raise RuntimeError(f"Graph API {exc.code}: {body[:300]}") from exc
+
+
+def fetch_applied_jobs(access_token: str) -> list[dict[str, Any]]:
+    """Search the user's mailbox for job-application confirmation emails.
+
+    Uses Graph's $search parameter across the last 6 months of mail.
+    Returns a list of dicts with keys: subject, company, received, sender, link.
+    """
+    # Run two searches and merge: one on subject keyword, one on common ATS senders
+    search_queries = [
+        '"application" OR "applied" OR "thank you for applying" OR "application received"',
+    ]
+    seen_ids: set[str] = set()
+    results: list[dict[str, Any]] = []
+
+    for q in search_queries:
+        encoded_q = urllib.parse.quote(f'"{q}"')
+        path = (
+            f"/me/messages"
+            f"?$search={encoded_q}"
+            f"&$top=100"
+            f"&$select=id,subject,receivedDateTime,from,webLink"
+            f"&$orderby=receivedDateTime+desc"
+        )
+        try:
+            data = _graph_request(access_token, path)
+        except RuntimeError:
+            # $orderby incompatible with $search — retry without it
+            path_no_sort = (
+                f"/me/messages"
+                f"?$search={encoded_q}"
+                f"&$top=100"
+                f"&$select=id,subject,receivedDateTime,from,webLink"
+            )
+            data = _graph_request(access_token, path_no_sort)
+
+        for msg in data.get("value", []):
+            msg_id = msg.get("id", "")
+            if msg_id in seen_ids:
+                continue
+            subject = msg.get("subject", "") or ""
+            sender_addr = (msg.get("from", {}).get("emailAddress", {}).get("address") or "")
+            sender_name = (msg.get("from", {}).get("emailAddress", {}).get("name") or "")
+            # Filter to only likely application emails
+            if not (_APPLICATION_SUBJECTS.search(subject) or _APPLICATION_SENDERS.search(sender_addr)):
+                continue
+            seen_ids.add(msg_id)
+            received_raw = msg.get("receivedDateTime", "")
+            try:
+                received_dt = datetime.fromisoformat(received_raw.replace("Z", "+00:00"))
+                received = received_dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                received = received_raw[:10]
+            results.append({
+                "subject": subject,
+                "company": sender_name,
+                "sender":  sender_addr,
+                "received": received,
+                "link": msg.get("webLink", ""),
+            })
+
+    results.sort(key=lambda m: m["received"], reverse=True)
+    return results
+
+
+@app.route("/applied", methods=["GET", "POST"])
+def applied() -> str:
+    error: str = ""
+    jobs: list[dict] = []
+    search_query = request.args.get("q", "").strip()
+    token_submitted = ""
+
+    if request.method == "POST":
+        token_submitted = (request.form.get("access_token") or "").strip()
+        if token_submitted:
+            # Store only in server-side session (never echoed back to client)
+            session["graph_token"] = token_submitted
+
+    access_token: str = session.get("graph_token", "")
+
+    if request.args.get("clear_token"):
+        session.pop("graph_token", None)
+        access_token = ""
+
+    if access_token:
+        try:
+            jobs = fetch_applied_jobs(access_token)
+        except RuntimeError as exc:
+            error = str(exc)
+            if "401" in error or "InvalidAuthenticationToken" in error:
+                session.pop("graph_token", None)
+                error = "Access token expired or invalid. Please paste a new one."
+
+    if search_query and jobs:
+        sq = search_query.lower()
+        jobs = [j for j in jobs if sq in (j["subject"] + " " + j["company"]).lower()]
+
+    return render_template(
+        "applied.html",
+        jobs=jobs,
+        error=error,
+        has_token=bool(access_token),
         search_query=search_query,
     )
 

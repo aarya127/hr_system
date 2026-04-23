@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Applied Jobs</title>
+    <style>
+        body {
+            font-family: Inter, system-ui, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: #f4f6fb;
+            color: #1f2937;
+        }
+        .page {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 32px;
+        }
+        .tab-nav {
+            display: flex;
+            gap: 0;
+            margin-bottom: 28px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        .tab-link {
+            padding: 10px 22px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: #4b5563;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-link:hover { color: #2563eb; }
+        .tab-active {
+            color: #2563eb;
+            border-bottom-color: #2563eb;
+        }
+        header { margin-bottom: 24px; }
+        h1 { margin: 0 0 8px; font-size: 2rem; }
+        .meta { color: #4b5563; margin-bottom: 16px; }
+        .token-form {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 14px;
+            padding: 24px;
+            margin-bottom: 28px;
+        }
+        .token-form h2 { margin: 0 0 8px; font-size: 1.1rem; }
+        .token-form p { margin: 0 0 14px; color: #4b5563; font-size: 0.9rem; }
+        .token-form ol { margin: 0 0 14px; color: #4b5563; font-size: 0.9rem; padding-left: 20px; }
+        .token-form ol li { margin-bottom: 4px; }
+        .token-form textarea {
+            width: 100%;
+            box-sizing: border-box;
+            font-family: monospace;
+            font-size: 0.8rem;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #cbd5e1;
+            resize: vertical;
+            min-height: 80px;
+            color: #0f172a;
+        }
+        .token-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 18px;
+            border-radius: 999px;
+            text-decoration: none;
+            color: white;
+            background: #2563eb;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.95rem;
+        }
+        .button:hover { background: #1d4ed8; }
+        .button-ghost {
+            background: white;
+            color: #6b7280;
+            border: 1px solid #e5e7eb;
+        }
+        .button-ghost:hover { background: #f9fafb; color: #374151; }
+        .filter-form {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        .filter-form input {
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid #cbd5e1;
+            background: white;
+            color: #0f172a;
+            min-width: 260px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 24px;
+        }
+        th, td {
+            text-align: left;
+            padding: 14px 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        th {
+            background: #eff6ff;
+            color: #0f172a;
+            font-weight: 700;
+            font-size: 0.95rem;
+        }
+        td a { color: #1d4ed8; text-decoration: none; }
+        td a:hover { text-decoration: underline; }
+        .error {
+            padding: 16px;
+            margin-bottom: 24px;
+            border-radius: 12px;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        .notice {
+            padding: 16px;
+            margin-bottom: 24px;
+            border-radius: 12px;
+            background: #fefce8;
+            color: #92400e;
+            font-size: 0.9rem;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background: #dcfce7;
+            color: #166534;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <nav class="tab-nav">
+        <a href="/" class="tab-link">Job Scraper</a>
+        <a href="/newgrad" class="tab-link">New Grad Jobs</a>
+        <a href="/applied" class="tab-link tab-active">Applied Jobs</a>
+    </nav>
+
+    <header>
+        <h1>Applied Jobs Tracker</h1>
+        <div class="meta">
+            Searches your Outlook mailbox via Microsoft Graph for job application confirmation emails.
+        </div>
+    </header>
+
+    <div class="notice">
+        <strong>Token privacy:</strong> Your access token is stored only in your browser session and never written to disk or logged.
+        Tokens from Graph Explorer expire after ~1 hour — paste a fresh one when needed.
+    </div>
+
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <!-- Token input form -->
+    <div class="token-form">
+        {% if has_token %}
+            <h2>Access token active</h2>
+            <p>Your Microsoft Graph token is loaded. <a href="/applied?clear_token=1">Clear token</a> to sign out.</p>
+        {% else %}
+            <h2>Connect your Outlook mailbox</h2>
+            <ol>
+                <li>Go to <a href="https://developer.microsoft.com/en-us/graph/graph-explorer" target="_blank" rel="noopener">Graph Explorer</a> and sign in with your university account.</li>
+                <li>Click <strong>Access token</strong> in the top-right → copy the token.</li>
+                <li>Paste it below and click <strong>Load emails</strong>.</li>
+            </ol>
+            <form method="post" action="/applied">
+                <textarea name="access_token" placeholder="Paste your Graph Explorer access token here…" autocomplete="off" spellcheck="false"></textarea>
+                <div class="token-actions">
+                    <button class="button" type="submit">Load emails</button>
+                </div>
+            </form>
+        {% endif %}
+    </div>
+
+    {% if has_token %}
+        <form class="filter-form" method="get" action="/applied">
+            <input
+                type="text"
+                name="q"
+                value="{{ search_query }}"
+                placeholder="Search subject or company…"
+            />
+            <button class="button" type="submit">Filter</button>
+            {% if search_query %}
+                <a class="button button-ghost" href="/applied">Clear</a>
+            {% endif %}
+        </form>
+
+        {% if jobs %}
+            <p><strong>{{ jobs|length }}</strong> application email{{ 's' if jobs|length != 1 }} found{% if search_query %} matching "<em>{{ search_query }}</em>"{% endif %}.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Subject</th>
+                        <th>From</th>
+                        <th>Received</th>
+                        <th>Open</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in jobs %}
+                        <tr>
+                            <td>{{ job.subject }}</td>
+                            <td>
+                                {{ job.company }}<br />
+                                <small style="color:#6b7280">{{ job.sender }}</small>
+                            </td>
+                            <td>{{ job.received }}</td>
+                            <td>
+                                {% if job.link %}
+                                    <a href="{{ job.link }}" target="_blank" rel="noopener">Open</a>
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>No application confirmation emails found in your mailbox. Try broadening your search or check that your token has <code>Mail.ReadWrite</code> permission.</p>
+        {% endif %}
+    {% endif %}
+</div>
+</body>
+</html>
