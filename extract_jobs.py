@@ -1309,9 +1309,18 @@ def _scrape_newgrad_category(category: str, embed_url: str) -> list[dict[str, An
             viewport={"width": 1400, "height": 900},
         )
         page = context.new_page()
-        page.goto(embed_url, wait_until="domcontentloaded", timeout=30000)
+        # Use "commit" so goto returns as soon as the response is received rather
+        # than waiting for DOMContentLoaded (which Airtable's SPA fires late).
+        # The actual readiness gate is wait_for_selector below.
+        for attempt in range(3):
+            try:
+                page.goto(embed_url, wait_until="commit", timeout=60000)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
         try:
-            page.wait_for_selector('a[href*="jobright.ai/jobs"]', timeout=20000)
+            page.wait_for_selector('a[href*="jobright.ai/jobs"]', timeout=45000)
         except Exception:
             pass
 
